@@ -1,0 +1,936 @@
+# Creating Soft Links for VCF Files
+# The 'ln -s' command creates symbolic (soft) links for all .vcf.gz files from the original directory
+# to the current working directory. This helps avoid duplicating large files.
+
+for dir in /dataA/dili/2026-04-30-sctask0442981-o/dragen/DIL-*; do
+    sample=$(basename $dir)
+    ln -s ${dir}/${sample}.hard-filtered.vcf.gz .
+    ln -s ${dir}/${sample}.hard-filtered.vcf.gz.tbi .
+done
+
+
+#Counting the merge vcf files
+ls *.hard-filtered.vcf.gz | wc -l
+
+
+# Merging VCF files
+# 'bcftools merge' combines multiple VCF files (file1, file2, ... file96) into a single merged VCF file.
+# -m none: disables multi-allelic site merging
+# -O z: outputs in compressed VCF format (.vcf.gz)
+# -o: specifies output file name
+bcftools merge -m none -O z -o merged.vcf.gz *.hard-filtered.vcf.gz
+
+#view merged vcf files
+less -S merged.vcf.gz
+
+#Creating sample list from the vcf file
+bcftools query -l merged.vcf.gz > sample_list.txt
+
+
+#Copying the sample list file from server to my local computer, type this on the local computer
+scp aketchv@ui.core.wits.ac.za:/home/aketchv/dili/vcfs/sample_list.txt "/mnt/c/School work/PhD project/ATDILI_PGX/Objective 2_Genomics/patients_metadata/"
+
+
+
+# Filtering
+# Filters variants based on quality and allele depth using bcftools.
+# -s LowQual: labels filtered records as LowQual
+# '-i QUAL>=30 && AD[*:1]>=15': includes only records with quality >=30 and allele depth >=15
+# -g8 -G10: set genotype and sample filtering thresholds
+# -Oz: output compressed VCF format
+bcftools filter -s LowQual '-i QUAL>=30 && AD[*:1]>=15' -g8 -G10 -Oz -o merged_filtered_pass.vcf.gz merged.vcf.gz
+
+#Index the merge file
+tabix merged_filtered_pass.vcf.gz
+
+
+# Preparing VEP input file
+# Removes patient/sample identifiers from the VCF to create a de-identified version for annotation.
+# The header and body are processed separately, then combined and compressed.
+bcftools view -h merged_filtered_pass.vcf.gz | grep -v '^#CHROM' > header.vcf
+bcftools view -H merged_filtered_pass.vcf.gz | cut -f1-9 > body.vcf
+cat header.vcf <(echo -e "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT") body.vcf | bgzip > vep_input_deidentified.vcf.gz
+tabix -p vcf vep_input_deidentified.vcf.gz
+
+Calculating AF
+bcftools +fill-tags   vep_input_deidentified.vcf.gz     -- -t AC | bcftools query     -f '%CHROM\t%POS\t%REF\t%ALT\t%AC\t572\n' > dili_286_AC.txt
+
+awk 'BEGIN{OFS="\t"} {print $1,$2,$3,$4,$5,$6,$5/$6}' dili_286_AC.txt > dili_286_AF.txt
+
+
+##The other filtering were done using R scripts to get the Allele frequency in the cohort and plotting the variant distributions.
+
+
+
+
+
+=================================================================================
+STEP 2: ADD ALLELE FREQUENCY (AF) INFO TAG
+=================================================================================
+
+Purpose
+-------
+Add missing INFO tags such as AF (Allele Frequency)
+
+Command
+-------
+
+bcftools +fill-tags     merged_filtered_pass.vcf.gz     -Oz     -o merged_filtered_pass_AF.vcf.gz     --     -t AF
+
+Explanation
+-----------
++fill-tags
+    Plugin that calculates INFO tags
+
+-t AF
+    Calculate allele frequency
+
+Output
+------
+merged_filtered_pass_AF.vcf.gz
+
+Index the file
+--------------
+
+tabix -p vcf merged_filtered_pass_AF.vcf.gz
+
+
+=================================================================================
+STEP 3: COUNT NUMBER OF VARIANTS
+=================================================================================
+
+Purpose
+-------
+Count non-header variant lines
+
+Command
+-------
+
+bcftools view -H merged_filtered_pass_AF.vcf.gz | wc -l
+
+Explanation
+-----------
+-H
+    Removes header lines
+
+wc -l
+    Counts variant records
+
+
+
+=================================================================================
+STEP 6: NORMALIZE MULTIALLELIC VARIANTS
+=================================================================================
+
+Purpose
+-------
+Split multiallelic variants into separate records
+
+Command
+-------
+
+bcftools norm     -m -any     merged_filtered_pass_AF.vcf.gz     -Oz     -o merged_filtered_pass_AF_norm.vcf.gz
+
+Explanation
+-----------
+-m -any
+    Split multiallelic variants into biallelic records
+
+Output
+------
+merged_filtered_pass_AF_norm.vcf.gz
+
+Index normalized VCF
+--------------------
+
+tabix -p vcf merged_filtered_pass_AF_norm.vcf.gz
+
+
+
+=================================================================================
+STEP 7: FILTER VARIANTS BY ALLELE FREQUENCY
+=================================================================================
+
+Purpose
+-------
+Keep variants with:
+AF > 0.05
+
+Command
+-------
+
+bcftools view     -i 'INFO/AF>0.05'     merged_filtered_pass_AF_norm.vcf.gz     -Oz     -o merged_filtered_pass_AF_norm_assoc.vcf.gz
+
+Explanation
+-----------
+-i
+    Include variants meeting condition
+
+INFO/AF>0.05
+    Keep variants with allele frequency > 5%
+
+Output
+------
+merged_filtered_pass_AF_norm_assoc.vcf.gz
+
+Index association-ready VCF
+---------------------------
+
+tabix -p vcf merged_filtered_pass_AF_norm_assoc.vcf.gz
+
+
+
+
+=================================================================================
+STEP 8: COUNT FINAL FILTERED VARIANTS
+=================================================================================
+
+Command
+-------
+
+bcftools view -H merged_filtered_pass_AF_norm_assoc.vcf.gz | wc -l
+
+
+=================================================================================
+STEP 9: CONVERT VCF TO PLINK2 FORMAT
+=================================================================================
+
+Purpose
+-------
+Convert filtered VCF into PLINK2 binary format
+
+Command
+-------
+ plink2     --vcf merged_filtered_pass_AF_norm_assoc.vcf.gz     --make-pgen     --out dili_assoc     --set-missing-var-ids @:#     --double-id     --split-par b38     --impute-sex
+
+
+Explanation
+-----------
+--vcf
+    Input VCF file
+
+--make-pgen
+    Create PLINK2 binary files:
+    .pgen, .pvar, .psam
+
+--out
+    Output prefix
+
+--set-missing-var-ids @:#
+    Replace missing IDs with CHR:POS
+
+--double-id
+    Set FID = IID
+
+--split-par b38
+    Handle pseudoautosomal regions
+
+--impute-sex
+    Infer missing sex information
+
+
+=================================================================================
+STEP 10: ASSIGN UNIQUE VARIANT IDs
+=================================================================================
+
+Purpose
+-------
+Generate unique variant IDs using:
+CHR:POS:REF:ALT
+
+Command
+-------
+plink2 \
+    --pfile dili_assoc \
+    --set-all-var-ids @:#:\$r:\$a \
+    --new-id-max-allele-len 200 \
+    --make-pgen \
+    --out dili_assoc_unique
+
+Explanation
+-----------
+\$r
+    Reference allele
+
+\$a
+    Alternate allele
+
+
+=================================================================================
+STEP 11: CHECK FOR DUPLICATE VARIANTS
+=================================================================================
+
+Purpose
+-------
+Identify duplicated variants
+
+Command
+-------
+awk 'NR>1 {print $3"\t"$1":"$2"\t"$4"/"$5}' \
+    dili_assoc_unique.pvar | \
+    sort | uniq -c | \
+    awk '$1>1 {print $0}'
+
+
+=================================================================================
+STEP 12: REMOVE DUPLICATE VARIANTS
+=================================================================================
+
+Purpose
+-------
+Keep first duplicate copy only
+
+Command
+-------
+plink2 \
+    --pfile dili_assoc_unique \
+    --rm-dup force-first \
+    --make-pgen \
+    --out dili_assoc_dedup
+
+#verify they are gone
+awk 'NR>1 {print $3}' dili_assoc_dedup.pvar | sort | uniq -d | head
+
+Explanation
+-----------
+--rm-dup force-first
+    Removes duplicate variants while keeping first occurrence
+
+
+=================================================================================
+STEP 13: LD PRUNING
+=================================================================================
+
+Purpose
+-------
+Remove correlated variants
+
+Command
+-------
+
+plink2 \
+    --pfile dili_assoc_dedup \
+    --indep-pairwise 50 5 0.2 \
+    --out dili_assoc_pruned
+
+Explanation
+-----------
+50
+    Window size in variants
+
+5
+    Step size
+
+0.2
+    r² threshold
+
+
+=================================================================================
+STEP 14: CREATE FINAL LD-PRUNED DATASET
+=================================================================================
+
+Purpose
+-------
+Generate final independent variant dataset
+
+Command
+-------
+plink2 \
+    --pfile dili_assoc_dedup \
+    --extract dili_assoc_pruned.prune.in \
+    --make-pgen \
+    --out dili_assoc_final
+
+Explanation
+-----------
+--extract
+    Keep only LD-independent variants
+
+
+
+
+=================================================================================
+LOGISTIC REGRESSION - 289 GENES
+=================================================================================
+
+WITHOUT COVARIATES (289 genes)
+
+plink2 \
+    --pfile dili_assoc_final \
+    --pheno phenotype.txt \
+    --pheno-name phenotype \
+    --glm firth-fallback allow-no-covars \
+    --adjust \
+    --out dili_assoc_pheno
+
+
+EXTRACT NOMINALLY SIGNIFICANT SNPs
+awk 'NR==1 || $16 < 0.05' \
+dili_assoc_pheno.phenotype.glm.logistic.hybrid \
+| (head -n 1; tail -n +2 | sort -g -k16,16) \
+> dili_assoc_sig_unadjusted_sorted.txt
+
+EXTRACT BONFERRONI SIGNIFICANT SNPs
+awk 'NR==1 || $6 < 0.05' \
+dili_assoc_pheno.phenotype.glm.logistic.hybrid.adjusted \
+| (head -n 1; tail -n +2 | sort -g -k6,6) \
+> dili_assoc_sig_bonferroni_sorted.txt
+
+
+
+WITH COVARIATES (289 genes)
+
+plink2 \
+    --pfile dili_assoc_final \
+    --pheno phenotype.txt \
+    --pheno-name phenotype \
+    --covar covariates.txt \
+    --covar-name gender,alcohol,hiv_status \
+    --glm firth-fallback \
+    --adjust \
+    --out dili_assoc_covar
+
+
+VIEW ASSOCIATION OUTPUT COLUMNS
+
+head -n 1 \
+    dili_assoc_covar.phenotype.glm.logistic.hybrid | \
+    tr '\t' '\n' | nl
+
+
+
+EXTRACT NOMINALLY SIGNIFICANT SNPs AND SORT
+
+P < 0.05
+
+Command
+-------
+(head -n 1 dili_assoc_covar.phenotype.glm.logistic.hybrid && \
+awk '$11=="ADD" && $16!="NA" && $16<=0.05' dili_assoc_covar.phenotype.glm.logistic.hybrid | \
+sort -k16,16g) > dili_assoc_covar_sig_unadjusted_sorted.txt
+
+
+
+EXTRACT BONFERRONI SIGNIFICANT SNPs
+
+awk 'NR==1 || $6 < 0.05' \
+dili_assoc_covar.phenotype.glm.logistic.hybrid.adjusted \
+| (head -n 1; tail -n +2 | sort -g -k6,6) \
+> dili_assoc_covar_sig_bonferroni_sorted.txt
+
+
+
+
+
+
+LINEAR REGRESSION FOR 289 PHARMACOGENES
+
+WITHOUT COVARIATES
+
+plink2 \
+    --pfile ../logistic/dili_assoc_final \
+    --pheno ../logistic/phenotype.txt \
+    --pheno-name lb_alt \
+    --glm allow-no-covars \
+    --adjust \
+    --out dili_assoc_lbalt
+
+
+EXTRACT NOMINALLY SIGNIFICANT SNPs
+awk 'NR==1 || $15 < 0.05' \
+dili_assoc_lbalt.lb_alt.glm.linear \
+| (head -n 1; tail -n +2 | sort -g -k15,15) \
+> dili_assoc_lbalt_sig_unadjusted_sorted.txt
+
+
+EXTRACT BONFERRONI SIGNIFICANT SNPs
+
+awk 'NR==1 || $6 < 0.05' \
+dili_assoc_lbalt.lb_alt.glm.linear.adjusted \
+| (head -n 1; tail -n +2 | sort -g -k6,6) \
+> dili_assoc_lbalt_sig_bonferroni_sorted.txt
+
+
+
+WITH COVARIATES
+
+plink2 \
+    --pfile ../logistic/dili_assoc_final \
+    --pheno ../logistic/phenotype.txt \
+    --pheno-name lb_alt \
+    --covar ../logistic/phenotype.txt \
+    --covar-name gender,alcohol,hiv_status \
+    --glm \
+    --adjust \
+    --out dili_assoc_lbalt_covar
+
+
+THEN FILTER ONLY ADD TESTS
+
+Check columns first
+head -n 1 dili_assoc_lbalt_covar.lb_alt.glm.linear | tr '\t' '\n' | nl
+
+Extract
+awk 'NR==1 || $10=="ADD"' \
+dili_assoc_lbalt_covar.lb_alt.glm.linear \
+> dili_assoc_lbalt_covar_ADD.txt
+
+MATCH TO ADJUSTED FILE
+Extract SNP IDs:
+awk 'NR>1 {print $3}' \
+dili_assoc_lbalt_covar_ADD.txt \
+> add_ids.txt
+
+
+Map adjusted p-values:
+awk 'NR==FNR {ids[$1]; next} NR==1 || ($2 in ids)' \
+add_ids.txt \
+dili_assoc_lbalt_covar.lb_alt.glm.linear.adjusted \
+> dili_assoc_lbalt_covar_ADD_adjusted.txt
+
+FINAL SIGNIFICANT RESULTS
+Unadjusted
+awk 'NR==1 || $15 < 0.05' dili_assoc_lbalt_covar_ADD.txt \
+| (head -n 1; tail -n +2 | sort -g -k15,15) \
+> dili_assoc_lbalt_covar_ADD_sig_unadjusted_sorted.txt
+
+Bonferroni
+awk 'NR==1 || $6 < 0.05' \
+dili_assoc_lbalt_covar_ADD_adjusted.txt \
+| (head -n 1; tail -n +2 | sort -g -k6,6) \
+> dili_assoc_lbalt_covar_ADD_sig_bonferroni_sorted.txt
+
+
+
+
+
+
+
+
+LINEAR REGRESSION FOR 289 PHARMACOGENES USING LOG TRANSFORMED
+
+WITHOUT COVARIATES
+
+plink2 \
+    --pfile ../logistic/dili_assoc_final \
+    --pheno ../logistic/phenotype.txt \
+    --pheno-name ln_lb_alt \
+    --glm allow-no-covars \
+    --adjust \
+    --out dili_assoc_ln_lbalt
+
+
+EXTRACT NOMINALLY SIGNIFICANT SNPs
+awk 'NR==1 || $15 < 0.05' \
+ dili_assoc_ln_lbalt.ln_lb_alt.glm.linear \
+| (head -n 1; tail -n +2 | sort -g -k15,15) \
+> dili_assoc_ln_lbalt_sig_unadjusted_sorted.txt
+
+
+EXTRACT BONFERRONI SIGNIFICANT SNPs
+
+awk 'NR==1 || $6 < 0.05' \
+dili_assoc_ln_lbalt.ln_lb_alt.glm.linear.adjusted \
+| (head -n 1; tail -n +2 | sort -g -k6,6) \
+> dili_assoc_ln_lbalt_sig_bonferroni_sorted.txt
+
+
+
+WITH COVARIATES
+
+plink2 \
+    --pfile ../logistic/dili_assoc_final \
+    --pheno ../logistic/phenotype.txt \
+    --pheno-name ln_lb_alt \
+    --covar ../logistic/phenotype.txt \
+    --covar-name gender,alcohol,hiv_status \
+    --glm \
+    --adjust \
+    --out dili_assoc_ln_lbalt_covar
+
+
+THEN FILTER ONLY ADD TESTS
+
+Check columns first
+head -n 1 dili_assoc_ln_lbalt_covar.ln_lb_alt.glm.linear | tr '\t' '\n' | nl
+
+Extract
+awk 'NR==1 || $10=="ADD"' \
+dili_assoc_ln_lbalt_covar.ln_lb_alt.glm.linear \
+> dili_assoc_ln_lbalt_covar_ADD.txt
+
+MATCH TO ADJUSTED FILE
+Extract SNP IDs:
+awk 'NR>1 {print $3}' \
+dili_assoc_ln_lbalt_covar_ADD.txt \
+> add_ids.txt
+
+
+Map adjusted p-values:
+awk 'NR==FNR {ids[$1]; next} NR==1 || ($2 in ids)' \
+add_ids.txt \
+dili_assoc_ln_lbalt_covar.ln_lb_alt.glm.linear.adjusted \
+> dili_assoc_ln_lbalt_covar_ADD_adjusted.txt
+
+FINAL SIGNIFICANT RESULTS
+Unadjusted
+awk 'NR==1 || $15 < 0.05' dili_assoc_ln_lbalt_covar_ADD.txt \
+| (head -n 1; tail -n +2 | sort -g -k15,15) \
+> dili_assoc_ln_lbalt_covar_ADD_sig_unadjusted_sorted.txt
+
+Bonferroni
+awk 'NR==1 || $6 < 0.05' \
+dili_assoc_ln_lbalt_covar_ADD_adjusted.txt \
+| (head -n 1; tail -n +2 | sort -g -k6,6) \
+> dili_assoc_ln_lbalt_covar_ADD_sig_bonferroni_sorted.txt
+
+
+
+
+
+
+ASSOCIATION FOR GENES PREVIOUSLY ASSOCIATED WITH ATDILI
+
+=================================================================================
+STEP 4: EXTRACT TARGET GENE VARIANTS
+=================================================================================
+
+Purpose
+-------
+Extract variants overlapping genes listed in new_target_genes.bed
+
+Command
+-------
+
+bcftools view \
+    -R new_target_genes.bed \
+    merged_filtered_pass_AF_norm_assoc.vcf.gz \
+    -Oz \
+    -o merged_filtered_pass_corrected_AF_15genes.vcf
+
+Explanation
+-----------
+-R
+    Restrict variants to regions in BED file
+
+Output
+------
+merged_filtered_pass_corrected_AF_15genes.vcf
+
+Index extracted VCF
+-------------------
+
+tabix -p vcf merged_filtered_pass_corrected_AF_15genes.vcf
+
+
+=================================================================================
+STEP 5: COUNT EXTRACTED VARIANTS
+=================================================================================
+
+Command
+-------
+
+bcftools view -H merged_filtered_pass_corrected_AF_15genes.vcf | wc -l
+
+
+CONVERT TO PLINK2
+
+plink2     --vcf merged_filtered_pass_corrected_AF_15genes.vcf     --make-pgen     --out dili_15genes     --set-missing-var-ids @:#:\$r:\$a     --double-id
+
+
+Remove duplicate variants
+plink2 \
+    --pfile dili_15genes \
+    --rm-dup force-first \
+    --make-pgen \
+    --out dili_15genes_dedup
+
+Check if duplicates
+awk 'NR>1 {print $3}' \
+    dili_15genes_dedup.pvar | \
+    sort | uniq -d
+
+LD pruning
+plink2 \
+    --pfile dili_15genes_dedup \
+    --indep-pairwise 50 5 0.2 \
+    --out dili_15genes_pruned
+
+Create final LD-independent dataset
+plink2 \
+    --pfile dili_15genes_dedup \
+    --extract dili_15genes_pruned.prune.in \
+    --make-pgen \
+    --out dili_15genes_final
+
+
+
+LOGISTIC REGRESSION
+
+WITHOUT covariates - 15 genes
+
+plink2 \
+    --pfile dili_15genes_final \
+    --pheno phenotype.txt \
+    --pheno-name phenotype \
+    --glm firth-fallback allow-no-covars \
+    --adjust \
+    --out dili_15genes_pheno
+
+
+Logistic Association analysis 
+
+WITH covariates
+plink2 \
+    --pfile dili_15genes_final \
+    --pheno phenotype.txt \
+    --pheno-name phenotype \
+    --covar covariates.txt \
+    --covar-name gender,alcohol,hiv_status \
+    --glm firth-fallback \
+    --adjust \
+    --out dili_15genes_covar
+
+Extract significant SNPs
+Unadjusted P < 0.05
+awk 'NR==1 || $16 < 0.05' \
+    dili_15genes_covar.phenotype.glm.logistic.hybrid.adjusted \
+    > dili_15genes_sig_unadjusted.txt
+
+Bonferroni significant
+awk 'NR==1 || $6 < 0.05' \
+    dili_15genes_covar.phenotype.glm.logistic.hybrid.adjusted \
+    > dili_15genes_sig_bonferroni.txt
+
+Sort significant variants
+Unadjusted
+(head -n 1 dili_15genes_sig_unadjusted.txt && \
+ tail -n +2 dili_15genes_sig_unadjusted.txt | sort -g -k16,16) \
+ > dili_15genes_sig_unadjusted_sorted.txt
+
+Bonferroni
+(head -n 1 dili_15genes_sig_bonferroni.txt && \
+ tail -n +2 dili_15genes_sig_bonferroni.txt | sort -g -k6,6) \
+ > dili_15genes_sig_bonferroni_sorted.txt
+
+
+
+LINEAR REGRESSION FOR 15 PHARMACOGENES
+
+WITHOUT COVARIATES
+plink2 \
+    --pfile dili_15genes_final \
+    --pheno phenotype.txt \
+    --pheno-name lb_alt \
+    --glm allow-no-covars \
+    --adjust \
+    --out dili_15genes_lbalt
+
+EXTRACT NOMINALLY SIGNIFICANT SNPs
+awk 'NR==1 || $15 < 0.05' \
+dili_15genes_lbalt.lb_alt.glm.linear \
+| (head -n 1; tail -n +2 | sort -g -k15,15) \
+> dili_15genes_lbalt_sig_unadjusted_sorted.txt
+
+EXTRACT BONFERRONI SIGNIFICANT SNPs
+
+awk 'NR==1 || $6 < 0.05' \
+dili_15genes_lbalt.lb_alt.glm.linear.adjusted \
+| (head -n 1; tail -n +2 | sort -g -k6,6) \
+> dili_15genes_lbalt_sig_bonferroni_sorted.txt
+
+
+
+WITH COVARIATES
+
+plink2 \
+    --pfile dili_15genes_final \
+    --pheno phenotype.txt \
+    --pheno-name lb_alt \
+    --covar phenotype.txt \
+    --covar-name gender,alcohol,hiv_status \
+    --glm \
+    --adjust \
+    --out dili_15genes_lbalt_covar
+
+
+CHECK OUTPUT COLUMNS
+head -n 1 \
+dili_15genes_lbalt_covar.lb_alt.glm.linear \
+| tr '\t' '\n' | nl
+
+EXTRACT ADDITIVE TESTS ONLY
+awk 'NR==1 || $10=="ADD"' \
+dili_15genes_lbalt_covar.lb_alt.glm.linear \
+> dili_15genes_lbalt_covar_ADD.txt
+
+EXTRACT SNP IDs
+
+awk 'NR>1 {print $3}' \
+dili_15genes_lbalt_covar_ADD.txt \
+> add_ids_15genes.txt
+
+
+MAP TO ADJUSTED RESULTS
+
+awk 'NR==FNR {ids[$1]; next} NR==1 || ($2 in ids)' \
+add_ids_15genes.txt \
+dili_15genes_lbalt_covar.lb_alt.glm.linear.adjusted \
+> dili_15genes_lbalt_covar_ADD_adjusted.txt
+
+
+
+FINAL SIGNIFICANT RESULTS
+NOMINALLY SIGNIFICANT SNPs
+
+view significant results
+
+awk 'NR==1 || $15 < 0.05' dili_15genes_lbalt_covar_ADD.txt | column -t | less -S
+
+
+SORT THE ENTIRE P VALUE IN COLUMN 15
+
+(head -1 dili_15genes_lbalt_covar_ADD.txt && \
+ tail -n +2 dili_15genes_lbalt_covar_ADD.txt | sort -g -k15,15) \
+> dili_15genes_lbalt_covar_ADD_sorted_by_P.txt
+
+SORT ONLY P VALUE (P=<0.05) IN COLUMN 15
+
+(head -1 dili_15genes_lbalt_covar_ADD.txt && \
+ awk 'NR>1 && $15<0.05' dili_15genes_lbalt_covar_ADD.txt | sort -g -k15,15) \
+> dili_15genes_ADD_sig_unadjusted_sorted.txt
+
+
+
+BONFERRONI SIGNIFICANT SNPs
+
+awk 'NR==1 || $6 < 0.05' \
+dili_15genes_lbalt_covar_ADD_adjusted.txt \
+| (head -n 1; tail -n +2 | sort -g -k6,6) \
+> dili_15genes_ADD_sig_bonferroni_sorted.txt
+
+
+
+
+LOG TRANSFORMED LINEAR ASSOC OF 15 GENES WITH COVARIATES
+
+#!/bin/bash
+
+# ==========================================================
+# 15 GENES - LOG TRANSFORMED ASSOCIATION ANALYSIS
+# WITH COVARIATES (gender, alcohol, hiv_status)
+# ==========================================================
+
+# =========================
+# 1. RUN PLINK2 ANALYSIS
+# =========================
+
+plink2 \
+    --pfile dili_15genes_final \
+    --pheno phenotype.txt \
+    --pheno-name ln_lb_alt \
+    --covar phenotype.txt \
+    --covar-name gender,alcohol,hiv_status \
+    --glm \
+    --adjust \
+    --out dili_15genes_ln_lbalt_covar
+
+
+# =========================
+# 2. CHECK OUTPUT COLUMNS
+# =========================
+
+head -n 1 dili_15genes_ln_lbalt_covar.ln_lb_alt.glm.linear | tr '\t' '\n' | nl
+
+
+# =========================
+# 3. EXTRACT ADDITIVE MODEL ONLY
+# =========================
+
+awk 'NR==1 || $10=="ADD"' \
+dili_15genes_ln_lbalt_covar.ln_lb_alt.glm.linear \
+> dili_15genes_ln_lbalt_covar_ADD.txt
+
+
+# =========================
+# 4. EXTRACT SNP IDS
+# =========================
+
+awk 'NR>1 {print $3}' \
+dili_15genes_ln_lbalt_covar_ADD.txt \
+> add_ids_15genes.txt
+
+
+# =========================
+# 5. MAP TO ADJUSTED RESULTS
+# =========================
+
+awk 'NR==FNR {ids[$1]; next} NR==1 || ($2 in ids)' \
+add_ids_15genes.txt \
+dili_15genes_ln_lbalt_covar.ln_lb_alt.glm.linear.adjusted \
+> dili_15genes_ln_lbalt_covar_ADD_adjusted.txt
+
+
+# =========================
+# 6. NOMINAL SIGNIFICANCE (P < 0.05)
+# =========================
+
+awk 'NR==1 || $15 < 0.05' \
+dili_15genes_ln_lbalt_covar_ADD.txt \
+| column -t | less -S
+
+
+# =========================
+# 7. SORT ALL RESULTS BY P-VALUE
+# =========================
+
+{
+    head -1 dili_15genes_ln_lbalt_covar_ADD.txt
+    tail -n +2 dili_15genes_ln_lbalt_covar_ADD.txt | sort -g -k15,15
+} > dili_15genes_ln_lbalt_covar_ADD_sorted_by_P.txt
+
+
+# =========================
+# 8. SORT SIGNIFICANT SNPs ONLY (P < 0.05)
+# =========================
+
+{
+    head -1 dili_15genes_ln_lbalt_covar_ADD.txt
+    awk 'NR>1 && $15<0.05' dili_15genes_ln_lbalt_covar_ADD.txt | sort -g -k15,15
+} > dili_15genes_ln_lbalt_covar_ADD_sig_unadjusted_sorted.txt
+
+
+# =========================
+# 9. BONFERRONI SIGNIFICANCE (ADJUSTED FILE)
+# =========================
+
+{
+    head -1 dili_15genes_ln_lbalt_covar_ADD_adjusted.txt
+    awk 'NR>1 && $6 < 0.05' dili_15genes_ln_lbalt_covar_ADD_adjusted.txt | sort -g -k6,6
+} > dili_15genes_ln_lbalt_covar_ADD_sig_bonferroni_sorted.txt
+
+
+# =========================
+# DONE
+# =========================
+
+echo "15-gene ln-transformed association pipeline completed successfully."
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
