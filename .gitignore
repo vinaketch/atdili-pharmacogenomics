@@ -1,0 +1,103 @@
+# ============================================================
+# ATDILI Pharmacogenomics project
+# Files excluded from version control
+# ============================================================
+
+# -------------------------
+# Genomic data
+# -------------------------
+
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.bcf
+*.bcf.csi
+
+# -------------------------
+# Sequencing data
+# -------------------------
+
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bam
+*.bam.bai
+*.cram
+*.cram.crai
+
+# -------------------------
+# Study/participant data
+# -------------------------
+
+*.xlsx
+*.xls
+*.csv
+*.tsv
+
+# Phenotype and metadata files
+*phenotype*
+*phenotypes*
+*metadata*
+*clinical*
+
+# -------------------------
+# Analysis outputs
+# -------------------------
+
+results/*
+logs/*
+
+# Keep directory placeholders
+!results/.gitkeep
+!logs/.gitkeep
+
+# -------------------------
+# Temporary files
+# -------------------------
+
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# -------------------------
+# Large compressed files
+# -------------------------
+
+*.gz
+*.zip
+*.tar
+*.tar.gz
+
+# -------------------------
+# HPC / cluster files
+# -------------------------
+
+slurm-*.out
+slurm-*.err
+
+# -------------------------
+# OS files
+# -------------------------
+
+.DS_Store
+Thumbs.db
+
+# -------------------------
+# Local configuration
+# -------------------------
+
+.env
