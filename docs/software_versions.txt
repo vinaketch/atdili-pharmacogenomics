@@ -1,0 +1,33 @@
+ATDILI Pharmacogenomics
+Software and database versions
+================================
+
+bcftools:
+Version used: [ENTER VERSION]
+
+vcftools:
+Version used: [ENTER VERSION]
+
+Ensembl VEP:
+Version used: [ENTER VERSION]
+
+Beagle:
+Version: beagle.27Feb25.75f
+
+StellarPGx:
+Version/commit: [ENTER VERSION]
+
+Python:
+Version used: [ENTER VERSION]
+
+Java:
+Version used: [ENTER VERSION]
+
+Reference genome:
+[ENTER GRCh VERSION]
+
+PharmVar:
+Release/version used: [ENTER VERSION]
+
+DRAGEN:
+Version used: [ENTER VERSION]

@@ -1,0 +1,21 @@
+# ATDILI Pharmacogenomics
+# Analysis parameters used for the PhD study
+
+cohort:
+  expected_samples: 286
+
+variant_filtering:
+  minimum_qual: 30
+  minimum_alt_depth: 15
+  genotype_gap: 8
+  genotype_filter: 10
+
+vep:
+  consequence_annotation: true
+  mane_select: true
+
+phasing:
+  tool: Beagle
+
+diplotype_calling:
+  tool: StellarPGx
